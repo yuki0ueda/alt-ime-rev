@@ -114,8 +114,8 @@ jobs:
           if ($proc.ExitCode -ne 0) {
               throw "Ahk2Exe failed with exit $($proc.ExitCode)"
           }
-          if (-not (Test-Path $out)) { throw "Expected output not found: $out" }
-          Write-Host "Built: $out ($([math]::Round((Get-Item $out).Length/1KB, 1)) KB)"
+          if (-not (Test-Path $outAbs)) { throw "Expected output not found: $outAbs" }
+          Write-Host "Built: $outAbs ($([math]::Round((Get-Item $outAbs).Length/1KB, 1)) KB)"
 
       - name: Upload exe artifact
         uses: actions/upload-artifact@v4
