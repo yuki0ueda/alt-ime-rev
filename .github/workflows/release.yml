@@ -31,7 +31,12 @@ jobs:
         shell: pwsh
         run: |
           $ver = "${{ env.AHK_VERSION }}"
-          $url = "https://www.autohotkey.com/download/2.0/AutoHotkey_${ver}.zip"
+          # Use the GitHub Releases asset (same upstream bits as autohotkey.com).
+          # The official autohotkey.com download is fronted by Cloudflare and
+          # returns a JS bot-challenge interstitial when fetched from GitHub
+          # Actions runners, so Invoke-WebRequest cannot retrieve the zip
+          # directly. The github.com asset is byte-identical and not gated.
+          $url = "https://github.com/AutoHotkey/AutoHotkey/releases/download/v${ver}/AutoHotkey_${ver}.zip"
           Write-Host "Downloading $url"
           Invoke-WebRequest -Uri $url -OutFile ahk.zip -UseBasicParsing
           New-Item -ItemType Directory -Force -Path ahk | Out-Null
