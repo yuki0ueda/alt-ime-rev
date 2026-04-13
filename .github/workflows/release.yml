@@ -87,16 +87,23 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $out = "dist/${{ env.OUTPUT_BASENAME }}-x64.exe"
+          # Use absolute paths for /in and /out: Ahk2Exe resolves relative
+          # /out paths against the parent directory of /in (so e.g.
+          # "dist/foo.exe" with /in "src/foo.ahk" lands in "src/dist/foo.exe",
+          # which doesn't exist and fails with
+          # "Ahk2Exe Error: Could not move final compiled binary file to
+          # destination. (C1)"). Resolving both to absolute paths sidesteps
+          # the surprise.
+          $srcAbs = (Resolve-Path "${{ env.MAIN_SCRIPT }}").Path
+          $outAbs = Join-Path (Get-Location) "dist\${{ env.OUTPUT_BASENAME }}-x64.exe"
           # /silent verbose : suppress Ahk2Exe's GUI window and stream progress
           # to stdout. Ahk2Exe is a GUI program by default; without /silent it
           # tries to open a window that can't be displayed on a CI runner and
-          # exits non-zero with no useful stderr. The official actions
-          # CCCC-L/Action-Ahk2Exe and tamo/action-Ahk2Exe both pass these
-          # flags for the same reason.
+          # exits non-zero. Both CCCC-L/Action-Ahk2Exe and tamo/action-Ahk2Exe
+          # pass these flags for the same reason.
           & "${{ steps.locate.outputs.ahk2exe }}" /silent verbose `
-              /in  "${{ env.MAIN_SCRIPT }}" `
-              /out "$out" `
+              /in  "$srcAbs" `
+              /out "$outAbs" `
               /base "${{ steps.locate.outputs.base }}"
           if ($LASTEXITCODE -ne 0) { throw "Ahk2Exe failed with exit $LASTEXITCODE" }
           if (-not (Test-Path $out)) { throw "Expected output not found: $out" }
