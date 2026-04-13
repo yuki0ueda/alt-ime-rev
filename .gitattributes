@@ -1,0 +1,21 @@
+* text=auto eol=lf
+
+# AutoHotkey は Windows ネイティブ。CRLF で固定する。
+*.ahk text eol=crlf working-tree-encoding=UTF-8
+
+# Windows スクリプト・バッチ類も CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# ドキュメント系は LF
+*.md  text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# バイナリ
+*.exe binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.ico binary

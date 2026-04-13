@@ -1,0 +1,175 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only (do not create GitHub Release)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  AHK_VERSION: '2.0.23'
+  MAIN_SCRIPT: 'src/alt-ime-rev.ahk'
+  OUTPUT_BASENAME: 'alt-ime-rev'
+
+# AutoHotkey v2 の公式配布は x86 (AutoHotkey32.exe) / x64 (AutoHotkey64.exe) のみで、
+# ARM64 ネイティブ base ファイルは存在しない。よって配布バイナリは x64 単一ビルド。
+# Windows 11 on ARM マシンは Microsoft Prism エミュレーション経由で x64 .exe を実行する。
+# alt-ime-rev はホットキーユーティリティで API 呼び出しが軽量なため、Prism のオーバーヘッドは実用上問題ない。
+
+jobs:
+  build:
+    name: Build .exe (x64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download AutoHotkey v${{ env.AHK_VERSION }}
+        shell: pwsh
+        run: |
+          $ver = "${{ env.AHK_VERSION }}"
+          $url = "https://www.autohotkey.com/download/2.0/AutoHotkey_${ver}.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile ahk.zip -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path ahk | Out-Null
+          Expand-Archive -Path ahk.zip -DestinationPath ahk -Force
+          Write-Host "--- AHK compiler base files ---"
+          Get-ChildItem -Path "ahk" -Recurse -Filter "AutoHotkey*.exe" |
+            Select-Object FullName | Format-Table -AutoSize
+
+      - name: Locate Ahk2Exe and x64 base
+        id: locate
+        shell: pwsh
+        run: |
+          $ahk2exe = Get-ChildItem -Path "ahk" -Recurse -Filter "Ahk2Exe.exe" |
+                     Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ahk2exe) { throw "Ahk2Exe.exe not found in AHK zip" }
+
+          $base = Get-ChildItem -Path "ahk" -Recurse -Filter "AutoHotkey64.exe" |
+                  Select-Object -First 1 -ExpandProperty FullName
+          if (-not $base) { throw "AutoHotkey64.exe (x64 base file) not found in AHK zip" }
+
+          Write-Host "Ahk2Exe : $ahk2exe"
+          Write-Host "Base    : $base"
+          "ahk2exe=$ahk2exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "base=$base"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Compile ${{ env.MAIN_SCRIPT }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $out = "dist/${{ env.OUTPUT_BASENAME }}-x64.exe"
+          & "${{ steps.locate.outputs.ahk2exe }}" `
+              /in  "${{ env.MAIN_SCRIPT }}" `
+              /out "$out" `
+              /base "${{ steps.locate.outputs.base }}"
+          if ($LASTEXITCODE -ne 0) { throw "Ahk2Exe failed with exit $LASTEXITCODE" }
+          if (-not (Test-Path $out)) { throw "Expected output not found: $out" }
+          Write-Host "Built: $out ($([math]::Round((Get-Item $out).Length/1KB, 1)) KB)"
+
+      - name: Upload exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exe-x64
+          path: dist/${{ env.OUTPUT_BASENAME }}-x64.exe
+          if-no-files-found: error
+
+  package-source:
+    name: Package source zip
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine version label
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ver="${GITHUB_REF#refs/tags/}"
+          else
+            ver="dev-${GITHUB_SHA::7}"
+          fi
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "Version label: $ver"
+
+      - name: Build source zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${{ env.OUTPUT_BASENAME }}-src-${{ steps.ver.outputs.ver }}"
+          mkdir -p "dist/$name"
+          cp -r src      "dist/$name/"
+          cp -r docs     "dist/$name/"
+          cp README.md CHANGELOG.md LICENSE "dist/$name/"
+          (cd dist && zip -r "$name.zip" "$name")
+          ls -la dist/
+
+      - name: Upload source zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-zip
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build, package-source]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for CHANGELOG)
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.exe' -o -name '*.zip' \) -exec cp -v {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          # Match either "## [v5.3]" or "## v5.3" heading, capture until next "## "
+          awk -v tag="$tag" '
+            BEGIN { found=0 }
+            /^## / {
+              if (found) { exit }
+              if ($0 ~ tag) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [[ ! -s release_notes.md ]]; then
+            echo "No CHANGELOG section for $tag, using generic note." >&2
+            printf '%s\n' "Release $tag" > release_notes.md
+          fi
+          echo "--- release_notes.md ---"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release_notes.md
+          files: release-assets/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true

@@ -1,0 +1,21 @@
+# Runtime logs (生成物)
+ime_debug.log
+ime_debug_old.log
+*.log
+
+# Build artifacts
+/dist/
+/build/
+*.exe
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.bak
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/
