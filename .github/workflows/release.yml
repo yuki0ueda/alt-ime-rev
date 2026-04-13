@@ -92,20 +92,28 @@ jobs:
           # "dist/foo.exe" with /in "src/foo.ahk" lands in "src/dist/foo.exe",
           # which doesn't exist and fails with
           # "Ahk2Exe Error: Could not move final compiled binary file to
-          # destination. (C1)"). Resolving both to absolute paths sidesteps
-          # the surprise.
+          # destination. (C1)").
           $srcAbs = (Resolve-Path "${{ env.MAIN_SCRIPT }}").Path
           $outAbs = Join-Path (Get-Location) "dist\${{ env.OUTPUT_BASENAME }}-x64.exe"
-          # /silent verbose : suppress Ahk2Exe's GUI window and stream progress
-          # to stdout. Ahk2Exe is a GUI program by default; without /silent it
-          # tries to open a window that can't be displayed on a CI runner and
-          # exits non-zero. Both CCCC-L/Action-Ahk2Exe and tamo/action-Ahk2Exe
-          # pass these flags for the same reason.
-          & "${{ steps.locate.outputs.ahk2exe }}" /silent verbose `
-              /in  "$srcAbs" `
-              /out "$outAbs" `
-              /base "${{ steps.locate.outputs.base }}"
-          if ($LASTEXITCODE -ne 0) { throw "Ahk2Exe failed with exit $LASTEXITCODE" }
+          # Run Ahk2Exe via Start-Process -Wait so PowerShell actually waits
+          # for the compiler to exit. Ahk2Exe is a Windows GUI subsystem
+          # binary; PowerShell's `&` invocation operator launches it
+          # asynchronously and returns immediately, so $LASTEXITCODE ends up
+          # empty even when the compile succeeds. Start-Process -Wait keeps
+          # the script blocked on the GUI process and gives us a real exit
+          # code via -PassThru.
+          # /silent verbose : Ahk2Exe-side flag to skip the GUI window and
+          # stream progress to stdout (CCCC-L/Action-Ahk2Exe and
+          # tamo/action-Ahk2Exe both use the same flags).
+          $proc = Start-Process -FilePath "${{ steps.locate.outputs.ahk2exe }}" `
+              -ArgumentList "/silent","verbose",`
+                  "/in", $srcAbs,`
+                  "/out", $outAbs,`
+                  "/base", "${{ steps.locate.outputs.base }}" `
+              -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+              throw "Ahk2Exe failed with exit $($proc.ExitCode)"
+          }
           if (-not (Test-Path $out)) { throw "Expected output not found: $out" }
           Write-Host "Built: $out ($([math]::Round((Get-Item $out).Length/1KB, 1)) KB)"
 
