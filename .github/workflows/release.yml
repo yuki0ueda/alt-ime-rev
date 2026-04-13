@@ -88,7 +88,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $out = "dist/${{ env.OUTPUT_BASENAME }}-x64.exe"
-          & "${{ steps.locate.outputs.ahk2exe }}" `
+          # /silent verbose : suppress Ahk2Exe's GUI window and stream progress
+          # to stdout. Ahk2Exe is a GUI program by default; without /silent it
+          # tries to open a window that can't be displayed on a CI runner and
+          # exits non-zero with no useful stderr. The official actions
+          # CCCC-L/Action-Ahk2Exe and tamo/action-Ahk2Exe both pass these
+          # flags for the same reason.
+          & "${{ steps.locate.outputs.ahk2exe }}" /silent verbose `
               /in  "${{ env.MAIN_SCRIPT }}" `
               /out "$out" `
               /base "${{ steps.locate.outputs.base }}"
