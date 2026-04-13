@@ -11,6 +11,7 @@ permissions:
 
 env:
   AHK_VERSION: '2.0.23'
+  AHK2EXE_VERSION: '1.1.37.02a2'
   MAIN_SCRIPT: 'src/alt-ime-rev.ahk'
   OUTPUT_BASENAME: 'alt-ime-rev'
 
@@ -27,31 +28,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download AutoHotkey v${{ env.AHK_VERSION }}
+      - name: Download AutoHotkey v${{ env.AHK_VERSION }} (base runtimes)
         shell: pwsh
         run: |
           $ver = "${{ env.AHK_VERSION }}"
-          # Use the GitHub Releases asset (same upstream bits as autohotkey.com).
-          # The official autohotkey.com download is fronted by Cloudflare and
-          # returns a JS bot-challenge interstitial when fetched from GitHub
-          # Actions runners, so Invoke-WebRequest cannot retrieve the zip
-          # directly. The github.com asset is byte-identical and not gated.
+          # Notes on URL choice:
+          # - The autohotkey.com download is fronted by Cloudflare and serves
+          #   a JS bot-challenge interstitial to GitHub Actions runners, so
+          #   Invoke-WebRequest cannot retrieve the zip directly there.
+          # - The AutoHotkey/AutoHotkey GitHub release asset is the same bits
+          #   without a bot challenge.
+          # - This zip contains only the base runtimes (AutoHotkey32.exe and
+          #   AutoHotkey64.exe). The Ahk2Exe compiler ships from a separate
+          #   repo (AutoHotkey/Ahk2Exe) and is downloaded in the next step.
           $url = "https://github.com/AutoHotkey/AutoHotkey/releases/download/v${ver}/AutoHotkey_${ver}.zip"
           Write-Host "Downloading $url"
           Invoke-WebRequest -Uri $url -OutFile ahk.zip -UseBasicParsing
           New-Item -ItemType Directory -Force -Path ahk | Out-Null
           Expand-Archive -Path ahk.zip -DestinationPath ahk -Force
-          Write-Host "--- AHK compiler base files ---"
+          Write-Host "--- AHK base runtimes ---"
           Get-ChildItem -Path "ahk" -Recurse -Filter "AutoHotkey*.exe" |
+            Select-Object FullName | Format-Table -AutoSize
+
+      - name: Download Ahk2Exe ${{ env.AHK2EXE_VERSION }} (compiler)
+        shell: pwsh
+        run: |
+          $ver = "${{ env.AHK2EXE_VERSION }}"
+          # Ahk2Exe is shipped from AutoHotkey/Ahk2Exe with tag pattern
+          # "Ahk2Exe<ver>" and asset "Ahk2Exe<ver>.zip".
+          $url = "https://github.com/AutoHotkey/Ahk2Exe/releases/download/Ahk2Exe${ver}/Ahk2Exe${ver}.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile ahk2exe.zip -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path ahk2exe | Out-Null
+          Expand-Archive -Path ahk2exe.zip -DestinationPath ahk2exe -Force
+          Write-Host "--- Ahk2Exe files ---"
+          Get-ChildItem -Path "ahk2exe" -Recurse -Filter "*.exe" |
             Select-Object FullName | Format-Table -AutoSize
 
       - name: Locate Ahk2Exe and x64 base
         id: locate
         shell: pwsh
         run: |
-          $ahk2exe = Get-ChildItem -Path "ahk" -Recurse -Filter "Ahk2Exe.exe" |
+          $ahk2exe = Get-ChildItem -Path "ahk2exe" -Recurse -Filter "Ahk2Exe.exe" |
                      Select-Object -First 1 -ExpandProperty FullName
-          if (-not $ahk2exe) { throw "Ahk2Exe.exe not found in AHK zip" }
+          if (-not $ahk2exe) { throw "Ahk2Exe.exe not found in Ahk2Exe zip" }
 
           $base = Get-ChildItem -Path "ahk" -Recurse -Filter "AutoHotkey64.exe" |
                   Select-Object -First 1 -ExpandProperty FullName
