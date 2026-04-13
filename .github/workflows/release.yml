@@ -11,6 +11,7 @@ permissions:
 
 env:
   AHK_VERSION: '2.0.23'
+  AHK2EXE_VERSION: '1.1.37.02a2'
   MAIN_SCRIPT: 'src/alt-ime-rev.ahk'
   OUTPUT_BASENAME: 'alt-ime-rev'
 
@@ -27,48 +28,55 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install AutoHotkey v${{ env.AHK_VERSION }} (full setup including Ahk2Exe)
+      - name: Set up AutoHotkey ${{ env.AHK_VERSION }} + Ahk2Exe ${{ env.AHK2EXE_VERSION }}
         shell: pwsh
         run: |
-          $ver = "${{ env.AHK_VERSION }}"
-          # Use the GitHub Releases setup.exe (Inno Setup full installer that
-          # includes the Ahk2Exe compiler under Compiler\ alongside the v2
-          # base runtimes). Notes on URL / installer choice:
-          # - autohotkey.com is fronted by Cloudflare and serves a JS bot
-          #   challenge to GitHub Actions runners; the github.com asset is
-          #   byte-identical and ungated.
-          # - The runtime-only zip (AutoHotkey_<ver>.zip) does NOT contain
-          #   Ahk2Exe, and the standalone Ahk2Exe.exe (from AutoHotkey/Ahk2Exe)
-          #   exits non-zero on a runner without the helper files the full
-          #   installer puts under the Compiler folder.
-          # - The full setup gives us a complete, working environment in one
-          #   step, which is the simplest reliable path.
-          $url = "https://github.com/AutoHotkey/AutoHotkey/releases/download/v${ver}/AutoHotkey_${ver}_setup.exe"
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile ahk_setup.exe -UseBasicParsing
-          Write-Host "Running silent install..."
-          # Inno Setup silent options: very silent + suppress msg boxes + no restart + no startup banner.
-          $proc = Start-Process -FilePath "$pwd\ahk_setup.exe" `
-              -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" `
-              -Wait -PassThru
-          if ($proc.ExitCode -ne 0) {
-            throw "AutoHotkey installer failed with exit $($proc.ExitCode)"
-          }
-          Write-Host "--- Installed AutoHotkey files ---"
-          Get-ChildItem -Path "C:\Program Files\AutoHotkey" -Recurse -Filter "*.exe" |
+          $ahkVer     = "${{ env.AHK_VERSION }}"
+          $ahk2exeVer = "${{ env.AHK2EXE_VERSION }}"
+
+          # Notes on the layout:
+          # - AutoHotkey base runtimes ship in AutoHotkey_<ver>.zip from
+          #   AutoHotkey/AutoHotkey on github.com (the autohotkey.com download
+          #   is gated by a Cloudflare bot challenge and is unusable from CI).
+          # - Ahk2Exe is a separate official compiler from AutoHotkey/Ahk2Exe;
+          #   its zip contains only Ahk2Exe.exe.
+          # - Ahk2Exe expects to be invoked from a "Compiler" subfolder of an
+          #   AutoHotkey install so it can locate base runtimes via the parent
+          #   directory. We replicate that layout below: ahk\AutoHotkey64.exe
+          #   as the base runtime and ahk\Compiler\Ahk2Exe.exe as the compiler.
+          # - The Compile step also passes /base explicitly, but the Compiler\
+          #   sub-folder layout is what lets Ahk2Exe initialise correctly
+          #   (without it Ahk2Exe.exe exits non-zero with no useful stderr).
+
+          # 1. Download and extract AutoHotkey base runtimes into ahk\
+          $ahkUrl = "https://github.com/AutoHotkey/AutoHotkey/releases/download/v${ahkVer}/AutoHotkey_${ahkVer}.zip"
+          Write-Host "Downloading $ahkUrl"
+          Invoke-WebRequest -Uri $ahkUrl -OutFile ahk.zip -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path ahk | Out-Null
+          Expand-Archive -Path ahk.zip -DestinationPath ahk -Force
+
+          # 2. Download Ahk2Exe and extract into ahk\Compiler\
+          $ahk2exeUrl = "https://github.com/AutoHotkey/Ahk2Exe/releases/download/Ahk2Exe${ahk2exeVer}/Ahk2Exe${ahk2exeVer}.zip"
+          Write-Host "Downloading $ahk2exeUrl"
+          Invoke-WebRequest -Uri $ahk2exeUrl -OutFile ahk2exe.zip -UseBasicParsing
+          New-Item -ItemType Directory -Force -Path ahk\Compiler | Out-Null
+          Expand-Archive -Path ahk2exe.zip -DestinationPath ahk\Compiler -Force
+
+          Write-Host "--- AutoHotkey + Ahk2Exe layout ---"
+          Get-ChildItem -Path ahk -Recurse -Filter "*.exe" |
             Select-Object FullName | Format-Table -AutoSize
 
       - name: Locate Ahk2Exe and x64 base
         id: locate
         shell: pwsh
         run: |
-          $ahk2exe = Get-ChildItem -Path "C:\Program Files\AutoHotkey" -Recurse -Filter "Ahk2Exe.exe" |
+          $ahk2exe = Get-ChildItem -Path "ahk\Compiler" -Recurse -Filter "Ahk2Exe.exe" |
                      Select-Object -First 1 -ExpandProperty FullName
-          if (-not $ahk2exe) { throw "Ahk2Exe.exe not found after AutoHotkey install" }
+          if (-not $ahk2exe) { throw "Ahk2Exe.exe not found in ahk\Compiler" }
 
-          $base = Get-ChildItem -Path "C:\Program Files\AutoHotkey" -Recurse -Filter "AutoHotkey64.exe" |
+          $base = Get-ChildItem -Path "ahk" -Recurse -Filter "AutoHotkey64.exe" |
                   Select-Object -First 1 -ExpandProperty FullName
-          if (-not $base) { throw "AutoHotkey64.exe (x64 base file) not found after AutoHotkey install" }
+          if (-not $base) { throw "AutoHotkey64.exe (x64 base file) not found in ahk\" }
 
           Write-Host "Ahk2Exe : $ahk2exe"
           Write-Host "Base    : $base"
