@@ -90,8 +90,14 @@ IME_RotateLogFile() {
         ; サイズチェック
         if (fileSize > IME_LOG_MAX_SIZE) {
             ; 古いログファイルが存在する場合は削除
+            ; （FileDelete は AHK v2 で失敗時に例外を投げるため、個別の try で保護してログ機能を止めない）
             if (FileExist(IME_LOG_FILE_OLD)) {
-                FileDelete(IME_LOG_FILE_OLD)
+                try {
+                    FileDelete(IME_LOG_FILE_OLD)
+                } catch as err {
+                    OutputDebug("[ERROR] Failed to delete old log file: " . err.Message)
+                    return  ; 削除失敗時はローテーションを諦める（次回再試行）
+                }
             }
 
             ; 現在のログファイルを古いファイルにリネーム
@@ -695,10 +701,14 @@ IME_GetConverting(WinTitle := "A") {
                     , "UInt")
             }
 
-            ; ImmReleaseContextでコンテキスト解放
-            DllCall("imm32\ImmReleaseContext"
+            ; ImmReleaseContextでコンテキスト解放（戻り値 BOOL: 失敗時は WARN ログ）
+            releaseResult := DllCall("imm32\ImmReleaseContext"
                 , "UPtr", hwnd
-                , "UPtr", hIMC)
+                , "UPtr", hIMC
+                , "Int")
+            if (!releaseResult) {
+                IME_Log("ImmReleaseContext failed", "WARN")
+            }
 
             IME_Log("Converting status: " . ret . " chars", "INFO")
             return ret
