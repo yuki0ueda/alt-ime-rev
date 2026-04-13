@@ -19,25 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-----------------------------------------------------------------------
-NOTICE — Derivative work acknowledgement
-
-This project is a derivative work. The immediate upstream of src/IME.ahk
-is the AutoHotkey v2 port by Ken'ichiro Ayaki (k-ayaki), published on
-2023-07-17 and declared NYSL <http://www.kmonos.net/nysl/> at that time.
-NYSL explicitly permits free modification and relicensing (section A-3 /
-A-4), so this fork is MIT-licensed.
-
-This project combines two independent upstream lineages that converge in
-yuki0ueda/alt-ime-rev:
-
-  src/IME.ahk (IME control library):
-    eamat                      — original AutoHotkey v1 version, distributed as "089.zip" (2008-09-21) via http://lukewarm.s101.xrea.com/up/. GitHub: @eamat-dot
-    Ken'ichiro Ayaki (k-ayaki) — AutoHotkey v2 port at https://github.com/k-ayaki/IMEv2.ahk (NYSL declared at publication, 2023-07-17)
-    yuki0ueda (this repo)      — fork modifications: error handling, automatic retry, file logging with 10MB rotation, ARM64 pointer-width fixes
-
-  src/alt-ime-rev.ahk (main hotkey script):
-    karakaram                  — original AutoHotkey v1 "alt-ime-ahk" at https://github.com/karakaram/alt-ime-ahk
-    nekocodeX                  — intermediate fork "alt-ime-ahk-mod", formerly at github.com/nekocodeX/alt-ime-ahk-mod (repository no longer available)
-    yuki0ueda (this repo)      — AutoHotkey v2 fork at https://github.com/yuki0ueda/alt-ime-rev (current maintainer)

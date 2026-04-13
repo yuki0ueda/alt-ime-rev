@@ -22,7 +22,7 @@
   License: Ken'ichiro Ayaki (k-ayaki) が v2 ポート公開時 (2023-07-17) に
            NYSL <http://www.kmonos.net/nysl/> を明示宣言。
            NYSL A-3 / A-4 が改変・再ライセンスを許可しているため本フォークは MIT へ relicense。
-           詳細は repo root の LICENSE の NOTICE セクションを参照。
+           詳細は repo root の LICENSE および NOTICE を参照。
 
 *****************************************************************************
   履歴 (upstream — 参考)
