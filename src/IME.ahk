@@ -69,6 +69,23 @@ global IME_RETRY_COUNT := 2         ; リトライ回数
 global IME_RETRY_DELAY := 50        ; リトライ間隔（ミリ秒）
 
 ;-----------------------------------------------------------
+; Windows Messages / IMC subcommands (winuser.h / imm.h)
+;-----------------------------------------------------------
+global WM_IME_CONTROL        := 0x0283
+global IMC_GETCONVERSIONMODE := 0x0001
+global IMC_SETCONVERSIONMODE := 0x0002
+global IMC_GETSENTENCEMODE   := 0x0003
+global IMC_SETSENTENCEMODE   := 0x0004
+global IMC_GETOPENSTATUS     := 0x0005
+global IMC_SETOPENSTATUS     := 0x0006
+global GCS_COMPSTR           := 0x0008
+
+; IME_SET / IME_SetConvMode / IME_SetSentenceMode で SendMessage 直後に
+; IME が状態を反映するまで待つ時間（ミリ秒）。
+; 直後 Get が追いつかず false negative になるのを防ぐための既知の値。
+global IME_VERIFY_WAIT_MS    := 10
+
+;-----------------------------------------------------------
 ; ログファイルのローテーション
 ;   ファイルサイズが上限を超えた場合、古いファイルにリネーム
 ;-----------------------------------------------------------
@@ -267,14 +284,16 @@ GetIMEWindow(hwnd) {
 }
 
 ;-----------------------------------------------------------
-; IMEの状態の取得
-;   WinTitle="A"    対象Window
-;   戻り値          1:ON / 0:OFF / -1:エラー
+; WM_IME_CONTROL 送信 + リトライ共通ヘルパー
+;   subCmd      IMC_* サブコマンド
+;   wparam      サブコマンドに応じたパラメータ (既定 0)
+;   WinTitle    対象ウィンドウ
+;   errValue    失敗時に返す値 (既定 -1)
+;   戻り値      SendMessage の戻り値 / 失敗時は errValue
+;
+; 用途: IME_GET / IME_GetConvMode / IME_GetSentenceMode など「送信のみ」系の共通実装。
 ;-----------------------------------------------------------
-IME_GET(WinTitle := "A") {
-    ; ログ削減：GETは頻繁に呼ばれるのでログレベルをDEBUGに
-
-    ; リトライロジック
+IME_SendControlRetry(subCmd, wparam := 0, WinTitle := "A", errValue := -1) {
     Loop IME_RETRY_COUNT + 1 {
         try {
             hwnd := GetTargetWindow(WinTitle)
@@ -283,8 +302,7 @@ IME_GET(WinTitle := "A") {
                     Sleep IME_RETRY_DELAY
                     continue
                 }
-                IME_Log("IME_GET: Failed to get target window", "ERROR")
-                return -1
+                return errValue
             }
 
             imeWnd := GetIMEWindow(hwnd)
@@ -293,34 +311,127 @@ IME_GET(WinTitle := "A") {
                     Sleep IME_RETRY_DELAY
                     continue
                 }
-                IME_Log("IME_GET: Failed to get IME window", "ERROR")
-                return -1
+                return errValue
             }
 
-            ; WM_IME_CONTROL (0x0283), IMC_GETOPENSTATUS (0x0005)
-            result := DllCall("user32\SendMessage"
-                , "UPtr", imeWnd        ; IMEウィンドウハンドル
-                , "UInt", 0x0283        ; WM_IME_CONTROL
-                , "UPtr", 0x0005        ; IMC_GETOPENSTATUS
-                , "UPtr", 0             ; lParam
-                , "Ptr")                ; 戻り値: LRESULT
-
-            status := result ? 1 : 0
-            ; 詳細ログは必要時のみ
-            ; IME_Log("IME_GET: Status=" . status, "INFO")
-            return status
+            return DllCall("user32\SendMessage"
+                , "UPtr", imeWnd
+                , "UInt", WM_IME_CONTROL
+                , "UPtr", subCmd
+                , "UPtr", wparam
+                , "Ptr")
 
         } catch as err {
-            IME_Log("IME_GET exception: " . err.Message, "ERROR")
+            IME_Log("IME_SendControlRetry exception: " . err.Message, "ERROR")
             if (A_Index <= IME_RETRY_COUNT) {
                 Sleep IME_RETRY_DELAY
                 continue
             }
-            return -1
+            return errValue
         }
     }
 
-    return -1
+    return errValue
+}
+
+;-----------------------------------------------------------
+; WM_IME_CONTROL 送信 + 設定後検証つきヘルパー
+;   subCmd      IMC_SET* サブコマンド
+;   wparam      設定値
+;   getterFn    設定後状態を取得する関数 (WinTitle を受ける関数リファレンス)
+;   expected    getterFn が返すべき期待値
+;   WinTitle    対象ウィンドウ
+;   label       ログ用ラベル (例 "IME_SET")
+;   formatFn    状態を表示用文字列に変換する関数リファレンス (省略時は生値を使用)
+;   戻り値      true:成功 / false:失敗
+;
+; 用途: IME_SET / IME_SetConvMode / IME_SetSentenceMode の共通実装。
+; 送信 → IME_VERIFY_WAIT_MS 待機 → getterFn で検証 → 不一致ならリトライ。
+;-----------------------------------------------------------
+IME_SetControlWithVerify(subCmd, wparam, getterFn, expected, WinTitle := "A", label := "IME_SET", formatFn := "") {
+    beforeState := getterFn.Call(WinTitle)
+    beforeStr := (formatFn = "") ? beforeState : formatFn.Call(beforeState)
+    expectedStr := (formatFn = "") ? expected : formatFn.Call(expected)
+
+    Loop IME_RETRY_COUNT + 1 {
+        try {
+            hwnd := GetTargetWindow(WinTitle)
+            if (!hwnd) {
+                if (A_Index <= IME_RETRY_COUNT) {
+                    IME_Log("Retry " . A_Index . "/" . IME_RETRY_COUNT, "WARN")
+                    Sleep IME_RETRY_DELAY
+                    continue
+                }
+                IME_Log(label . ": Failed to get target window after retries", "ERROR")
+                return false
+            }
+
+            imeWnd := GetIMEWindow(hwnd)
+            if (!imeWnd) {
+                if (A_Index <= IME_RETRY_COUNT) {
+                    Sleep IME_RETRY_DELAY
+                    continue
+                }
+                IME_Log(label . ": Failed to get IME window after retries", "ERROR")
+                return false
+            }
+
+            sendResult := DllCall("user32\SendMessage"
+                , "UPtr", imeWnd
+                , "UInt", WM_IME_CONTROL
+                , "UPtr", subCmd
+                , "UPtr", wparam
+                , "Ptr")
+            IME_Log("SendMessage returned: " . sendResult, "INFO")
+
+            ; SendMessage 直後は IME 状態が追いつかないことがあるため待機してから検証
+            Sleep IME_VERIFY_WAIT_MS
+            afterState := getterFn.Call(WinTitle)
+            afterStr := (formatFn = "") ? afterState : formatFn.Call(afterState)
+            stateChange := beforeStr . " -> " . afterStr
+
+            if (afterState = expected) {
+                if (beforeState = expected) {
+                    IME_Log(label . ": " . stateChange . " [ALREADY SET]", "INFO")
+                } else {
+                    IME_Log(label . ": " . stateChange . " [SUCCESS]", "SUCCESS")
+                }
+                return true
+            }
+
+            IME_Log(label . ": " . stateChange . " [FAILED] Expected: " . expectedStr, "WARN")
+            if (A_Index <= IME_RETRY_COUNT) {
+                Sleep IME_RETRY_DELAY
+                continue
+            }
+            return false
+
+        } catch as err {
+            IME_Log(label . " exception: " . err.Message, "ERROR")
+            if (A_Index <= IME_RETRY_COUNT) {
+                Sleep IME_RETRY_DELAY
+                continue
+            }
+            return false
+        }
+    }
+
+    return false
+}
+
+;-----------------------------------------------------------
+; IMEの状態の取得
+;   WinTitle="A"    対象Window
+;   戻り値          1:ON / 0:OFF / -1:エラー
+;-----------------------------------------------------------
+IME_GET(WinTitle := "A") {
+    ; IME_GET は高頻度に呼ばれるため、ここではログを最小限にする。
+    result := IME_SendControlRetry(IMC_GETOPENSTATUS, 0, WinTitle, -1)
+    if (result = -1) {
+        IME_Log("IME_GET: Failed to query IME status", "ERROR")
+        return -1
+    }
+    return result ? 1 : 0
 }
 
 ;-----------------------------------------------------------
@@ -333,80 +444,10 @@ IME_SET(SetSts, WinTitle := "A") {
     targetState := SetSts ? "ON" : "OFF"
     IME_Log("IME_SET called: " . targetState . " (" . SetSts . ") for: " . WinTitle, "INFO")
 
-    ; 【重要】設定前の状態を取得
-    beforeState := IME_GET(WinTitle)
-    beforeStr := (beforeState = 1) ? "ON" : (beforeState = 0) ? "OFF" : "UNKNOWN"
+    ; 1:ON / 0:OFF / その他:UNKNOWN を表示文字列に変換
+    formatOpenStatus := (v) => (v = 1) ? "ON" : (v = 0) ? "OFF" : "UNKNOWN"
 
-    ; リトライロジック
-    Loop IME_RETRY_COUNT + 1 {
-        try {
-            hwnd := GetTargetWindow(WinTitle)
-            if (!hwnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    IME_Log("Retry " . A_Index . "/" . IME_RETRY_COUNT, "WARN")
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                IME_Log("Failed to get target window after retries", "ERROR")
-                return false
-            }
-
-            imeWnd := GetIMEWindow(hwnd)
-            if (!imeWnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                IME_Log("Failed to get IME window after retries", "ERROR")
-                return false
-            }
-
-            ; WM_IME_CONTROL (0x0283), IMC_SETOPENSTATUS (0x0006)
-            sendResult := DllCall("user32\SendMessage"
-                , "UPtr", imeWnd        ; IMEウィンドウハンドル
-                , "UInt", 0x0283        ; WM_IME_CONTROL
-                , "UPtr", 0x0006        ; IMC_SETOPENSTATUS
-                , "UPtr", SetSts        ; lParam: 0 or 1
-                , "Ptr")                ; 戻り値: LRESULT
-
-            IME_Log("SendMessage returned: " . sendResult, "INFO")
-
-            ; 【重要】設定後の状態を取得して確認
-            Sleep 10  ; IME処理を待つ（短い待機）
-            afterState := IME_GET(WinTitle)
-            afterStr := (afterState = 1) ? "ON" : (afterState = 0) ? "OFF" : "UNKNOWN"
-
-            ; 状態変化をログに記録
-            stateChange := beforeStr . " -> " . afterStr
-            expectedMatch := (afterState = SetSts)
-
-            if (expectedMatch) {
-                IME_Log("IME_SET: " . stateChange . " [SUCCESS]", "SUCCESS")
-                return true
-            } else if (beforeState = afterState && beforeState = SetSts) {
-                ; すでに目的の状態だった場合も成功
-                IME_Log("IME_SET: " . stateChange . " [ALREADY SET]", "INFO")
-                return true
-            } else {
-                IME_Log("IME_SET: " . stateChange . " [FAILED] Expected: " . targetState, "WARN")
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return false
-            }
-
-        } catch as err {
-            IME_Log("IME_SET exception: " . err.Message, "ERROR")
-            if (A_Index <= IME_RETRY_COUNT) {
-                Sleep IME_RETRY_DELAY
-                continue
-            }
-            return false
-        }
-    }
-
-    return false
+    return IME_SetControlWithVerify(IMC_SETOPENSTATUS, SetSts, IME_GET, SetSts, WinTitle, "IME_SET", formatOpenStatus)
 }
 
 ;-----------------------------------------------------------
@@ -417,48 +458,12 @@ IME_SET(SetSts, WinTitle := "A") {
 IME_GetConvMode(WinTitle := "A") {
     IME_Log("IME_GetConvMode called for: " . WinTitle, "INFO")
 
-    Loop IME_RETRY_COUNT + 1 {
-        try {
-            hwnd := GetTargetWindow(WinTitle)
-            if (!hwnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return -1
-            }
-
-            imeWnd := GetIMEWindow(hwnd)
-            if (!imeWnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return -1
-            }
-
-            ; WM_IME_CONTROL (0x0283), IMC_GETCONVERSIONMODE (0x0001)
-            result := DllCall("user32\SendMessage"
-                , "UPtr", imeWnd
-                , "UInt", 0x0283
-                , "UPtr", 0x0001
-                , "UPtr", 0
-                , "Ptr")
-
-            IME_Log("Conversion mode: " . result, "INFO")
-            return result
-
-        } catch as err {
-            IME_Log("IME_GetConvMode exception: " . err.Message, "ERROR")
-            if (A_Index <= IME_RETRY_COUNT) {
-                Sleep IME_RETRY_DELAY
-                continue
-            }
-            return -1
-        }
+    result := IME_SendControlRetry(IMC_GETCONVERSIONMODE, 0, WinTitle, -1)
+    if (result = -1) {
+        return -1
     }
-
-    return -1
+    IME_Log("Conversion mode: " . result, "INFO")
+    return result
 }
 
 ;-----------------------------------------------------------
@@ -470,64 +475,7 @@ IME_GetConvMode(WinTitle := "A") {
 IME_SetConvMode(ConvMode, WinTitle := "A") {
     IME_Log("IME_SetConvMode called: " . ConvMode . " for: " . WinTitle, "INFO")
 
-    ; 設定前の状態を取得
-    beforeMode := IME_GetConvMode(WinTitle)
-
-    Loop IME_RETRY_COUNT + 1 {
-        try {
-            hwnd := GetTargetWindow(WinTitle)
-            if (!hwnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return false
-            }
-
-            imeWnd := GetIMEWindow(hwnd)
-            if (!imeWnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return false
-            }
-
-            ; WM_IME_CONTROL (0x0283), IMC_SETCONVERSIONMODE (0x0002)
-            result := DllCall("user32\SendMessage"
-                , "UPtr", imeWnd
-                , "UInt", 0x0283
-                , "UPtr", 0x0002
-                , "UPtr", ConvMode
-                , "Ptr")
-
-            ; 設定後の状態を確認
-            Sleep 10
-            afterMode := IME_GetConvMode(WinTitle)
-
-            if (afterMode = ConvMode) {
-                IME_Log("IME_SetConvMode: " . beforeMode . " -> " . afterMode . " [SUCCESS]", "SUCCESS")
-                return true
-            } else {
-                IME_Log("IME_SetConvMode: " . beforeMode . " -> " . afterMode . " [FAILED] Expected: " . ConvMode, "WARN")
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return false
-            }
-
-        } catch as err {
-            IME_Log("IME_SetConvMode exception: " . err.Message, "ERROR")
-            if (A_Index <= IME_RETRY_COUNT) {
-                Sleep IME_RETRY_DELAY
-                continue
-            }
-            return false
-        }
-    }
-
-    return false
+    return IME_SetControlWithVerify(IMC_SETCONVERSIONMODE, ConvMode, IME_GetConvMode, ConvMode, WinTitle, "IME_SetConvMode")
 }
 
 ;-----------------------------------------------------------
@@ -538,48 +486,12 @@ IME_SetConvMode(ConvMode, WinTitle := "A") {
 IME_GetSentenceMode(WinTitle := "A") {
     IME_Log("IME_GetSentenceMode called for: " . WinTitle, "INFO")
 
-    Loop IME_RETRY_COUNT + 1 {
-        try {
-            hwnd := GetTargetWindow(WinTitle)
-            if (!hwnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return -1
-            }
-
-            imeWnd := GetIMEWindow(hwnd)
-            if (!imeWnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return -1
-            }
-
-            ; WM_IME_CONTROL (0x0283), IMC_GETSENTENCEMODE (0x0003)
-            result := DllCall("user32\SendMessage"
-                , "UPtr", imeWnd
-                , "UInt", 0x0283
-                , "UPtr", 0x0003
-                , "UPtr", 0
-                , "Ptr")
-
-            IME_Log("Sentence mode: " . result, "INFO")
-            return result
-
-        } catch as err {
-            IME_Log("IME_GetSentenceMode exception: " . err.Message, "ERROR")
-            if (A_Index <= IME_RETRY_COUNT) {
-                Sleep IME_RETRY_DELAY
-                continue
-            }
-            return -1
-        }
+    result := IME_SendControlRetry(IMC_GETSENTENCEMODE, 0, WinTitle, -1)
+    if (result = -1) {
+        return -1
     }
-
-    return -1
+    IME_Log("Sentence mode: " . result, "INFO")
+    return result
 }
 
 ;-----------------------------------------------------------
@@ -591,64 +503,7 @@ IME_GetSentenceMode(WinTitle := "A") {
 IME_SetSentenceMode(SentenceMode, WinTitle := "A") {
     IME_Log("IME_SetSentenceMode called: " . SentenceMode . " for: " . WinTitle, "INFO")
 
-    ; 設定前の状態を取得
-    beforeMode := IME_GetSentenceMode(WinTitle)
-
-    Loop IME_RETRY_COUNT + 1 {
-        try {
-            hwnd := GetTargetWindow(WinTitle)
-            if (!hwnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return false
-            }
-
-            imeWnd := GetIMEWindow(hwnd)
-            if (!imeWnd) {
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return false
-            }
-
-            ; WM_IME_CONTROL (0x0283), IMC_SETSENTENCEMODE (0x0004)
-            result := DllCall("user32\SendMessage"
-                , "UPtr", imeWnd
-                , "UInt", 0x0283
-                , "UPtr", 0x0004
-                , "UPtr", SentenceMode
-                , "Ptr")
-
-            ; 設定後の状態を確認
-            Sleep 10
-            afterMode := IME_GetSentenceMode(WinTitle)
-
-            if (afterMode = SentenceMode) {
-                IME_Log("IME_SetSentenceMode: " . beforeMode . " -> " . afterMode . " [SUCCESS]", "SUCCESS")
-                return true
-            } else {
-                IME_Log("IME_SetSentenceMode: " . beforeMode . " -> " . afterMode . " [FAILED] Expected: " . SentenceMode, "WARN")
-                if (A_Index <= IME_RETRY_COUNT) {
-                    Sleep IME_RETRY_DELAY
-                    continue
-                }
-                return false
-            }
-
-        } catch as err {
-            IME_Log("IME_SetSentenceMode exception: " . err.Message, "ERROR")
-            if (A_Index <= IME_RETRY_COUNT) {
-                Sleep IME_RETRY_DELAY
-                continue
-            }
-            return false
-        }
-    }
-
-    return false
+    return IME_SetControlWithVerify(IMC_SETSENTENCEMODE, SentenceMode, IME_GetSentenceMode, SentenceMode, WinTitle, "IME_SetSentenceMode")
 }
 
 ;-----------------------------------------------------------
@@ -692,10 +547,10 @@ IME_GetConverting(WinTitle := "A") {
                 , "UInt")
 
             if (openStatus) {
-                ; GCS_COMPSTR (0x8) で変換中の文字列の長さを取得
+                ; GCS_COMPSTR で変換中の文字列の長さを取得
                 ret := DllCall("imm32\ImmGetCompositionString"
                     , "UPtr", hIMC
-                    , "UInt", 0x8
+                    , "UInt", GCS_COMPSTR
                     , "Ptr", 0
                     , "UInt", 0
                     , "UInt")
@@ -771,7 +626,7 @@ Get_Keyboard_Layout(WinTitle := "A") {
 ; ヘルパー関数
 ;-----------------------------------------------------------
 
-Get_languege_id(hKL) {
+Get_language_id(hKL) {
     return Format("0x{:X}", Mod(hKL, 0x10000))
 }
 
@@ -783,8 +638,8 @@ Get_sublanguage_identifier(local_identifier) {
     return Format("0x{:X}", Floor(local_identifier / 0x100))
 }
 
-Get_languege_name() {
-    locale_id := Get_languege_id(Get_Keyboard_Layout())
+Get_language_name() {
+    locale_id := Get_language_id(Get_Keyboard_Layout())
     return    (locale_id = "0x436") ? "af"
             : (locale_id = "0x804") ? "zh-cn"
             : (locale_id = "0xC04") ? "zh-hk"
